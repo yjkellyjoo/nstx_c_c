@@ -19,6 +19,20 @@ class Link:
         self._payments: set[str] = set()
         self._refunds: set[str] = set()
 
+    @classmethod
+    def from_existing(cls, existing_link: "Link", ttl: int = 1800) -> "Link":
+        """Create a new Link with same properties but refreshed expiration"""
+        new_link = cls.__new__(cls)
+        new_link.token = existing_link.token
+        new_link.order_id = existing_link.order_id
+        new_link.amount = existing_link.amount
+        new_link.status = existing_link.status
+        new_link.expires_at = datetime.now() + timedelta(seconds=ttl)
+        new_link._payments = existing_link._payments.copy()
+        new_link._refunds = existing_link._refunds.copy()
+        return new_link
+
+
 class PaymentLinkService:
     """❗ ***NOT*** production-ready.  Your job is to fix it so the tests pass."""
     _storage: Dict[str, Link] = {}              # token  -> Link
@@ -26,9 +40,12 @@ class PaymentLinkService:
 
     async def create(self, order_id: str, amount: int, ttl: int = 1800) -> Link:
         if order_id in self._by_order:
-            link = self._by_order[order_id]
-            link.expires_at = datetime.now() + timedelta(seconds=ttl)
-            return link
+            # Instead of updating the existing link, we create a new one
+            existing_link = self._by_order[order_id]
+            new_link = Link.from_existing(existing_link, ttl)
+            self._storage[new_link.token] = new_link
+            self._by_order[order_id] = new_link
+            return new_link
 
         link = Link(order_id, amount, ttl)
         self._storage[link.token] = link
