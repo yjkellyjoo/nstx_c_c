@@ -41,6 +41,12 @@ class PaymentLinkService:
     _storage: Dict[str, Link] = {}              # token  -> Link
     _by_order: Dict[str, Link] = {}             # order_id -> Link
 
+    async def _is_expired(self, link: Link) -> bool:
+        if link.expires_at < datetime.now():
+            link.status = Status.EXPIRED
+            return True
+        return False
+
     async def create(self, order_id: str, amount: int, ttl: int = 1800) -> Link:
         if order_id in self._by_order:
             # Instead of updating the existing link, we create a new one
@@ -58,7 +64,7 @@ class PaymentLinkService:
     async def pay(self, token: str, idem_key: str) -> Link:
         link = self._storage[token]
         async with link._lock:  # Acquire lock for atomic operation
-            if link.status == Status.EXPIRED:
+            if await self._is_expired(link):
                 raise ValueError("expired")
             if link.status == Status.PAID:
                 if idem_key in link._payments:
@@ -74,8 +80,19 @@ class PaymentLinkService:
 
     async def refund(self, token: str, idem_key: str) -> Link:
         link = self._storage[token]
-        if link.status != Status.PAID:
-            raise ValueError("cannot refund")
-        link.status = Status.REFUNDED
-        link._refunds.add(idem_key)
-        return link
+        async with link._lock:
+            if await self._is_expired(link):
+                raise ValueError("expired")
+            if link.status == Status.CREATED:
+                raise ValueError("cannot refund before payment")
+            if link.status == Status.REFUNDED:
+                if idem_key in link._refunds:
+                    return link
+                else:
+                    raise ValueError("already refunded with different idem_key")
+            if link.status == Status.PAID:
+                link.status = Status.REFUNDED
+                link._refunds.add(idem_key)
+                return link
+            
+            raise ValueError("something went wrong with refund")
