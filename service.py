@@ -1,4 +1,5 @@
 import secrets
+import asyncio
 from enum import Enum
 from typing import Dict
 from datetime import datetime, timedelta
@@ -18,6 +19,7 @@ class Link:
         self.expires_at = datetime.now() + timedelta(seconds=ttl)
         self._payments: set[str] = set()
         self._refunds: set[str] = set()
+        self._lock = asyncio.Lock()  # Lock for this specific link
 
     @classmethod
     def from_existing(cls, existing_link: "Link", ttl: int = 1800) -> "Link":
@@ -30,6 +32,7 @@ class Link:
         new_link.expires_at = datetime.now() + timedelta(seconds=ttl)
         new_link._payments = existing_link._payments.copy()
         new_link._refunds = existing_link._refunds.copy()
+        new_link._lock = asyncio.Lock()  # New lock for the new link instance
         return new_link
 
 
@@ -54,12 +57,20 @@ class PaymentLinkService:
 
     async def pay(self, token: str, idem_key: str) -> Link:
         link = self._storage[token]
-        if link.status == Status.EXPIRED:
-            raise ValueError("expired")
-        if link.status != Status.PAID:
-            link.status = Status.PAID
-            link._payments.add(idem_key)
-        return link
+        async with link._lock:  # Acquire lock for atomic operation
+            if link.status == Status.EXPIRED:
+                raise ValueError("expired")
+            if link.status == Status.PAID:
+                if idem_key in link._payments:
+                    return link
+                else:
+                    raise ValueError("already paid with different idem_key")
+            if link.status == Status.CREATED:
+                link.status = Status.PAID
+                link._payments.add(idem_key)
+                return link
+            
+            raise ValueError("invalid status for payment")
 
     async def refund(self, token: str, idem_key: str) -> Link:
         link = self._storage[token]
